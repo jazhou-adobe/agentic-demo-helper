@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en" data-pn-ui="mock">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Acme Coworker — Research Agent</title>
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --user:#e8efff; --ink:#1a2233; --mut:#5a6478; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif; color:var(--ink); background:var(--bg); }
+  header.app { position:sticky; top:0; z-index:5; background:#11162a; color:#fff; padding:12px 24px; display:flex; align-items:center; gap:12px; }
+  header.app .dot { width:10px;height:10px;border-radius:50%;background:#4457d6; }
+  main { max-width:860px; margin:0 auto; padding:24px 24px 200px; }
+  #chat-log > div { margin:14px 0; padding:14px 18px; border-radius:12px; background:var(--card); box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  #chat-log > div[data-role="user"] { background:var(--user); margin-left:80px; }
+  #chat-log > div[data-role="assistant"] { margin-right:40px; }
+  .who { font-size:12px; font-weight:700; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
+  pre { background:#0c1024; color:#d6e0ff; padding:12px; border-radius:8px; overflow:auto; font:13px/1.5 ui-monospace,monospace; }
+  table { border-collapse:collapse; width:100%; }
+  th,td { border:1px solid #d9deea; padding:6px 10px; text-align:left; font-size:14px; }
+  .tool { display:inline-flex; gap:8px; align-items:center; background:#eef1f7; border:1px solid #d9deea; border-radius:8px; padding:6px 10px; font-size:13px; color:var(--mut); }
+  h3 { margin:.2em 0 .4em; }
+</style>
+</head>
+<body>
+<header class="app"><span class="dot"></span><b>Acme Coworker</b> · Research Agent · <span style="opacity:.6">conversation 90210</span></header>
+<main>
+  <div id="chat-log">
+    <div data-role="user"><div class="who">You</div>Research the EV charging market in APAC and identify the top 3 growth drivers.</div>
+    <div data-role="assistant"><div class="who">Agent</div>
+      <div class="tool" data-tool="web_search">🔎 web_search · "APAC EV charging market 2025"</div>
+      <p>I reviewed 14 sources across market reports and regulator filings. Summary below.</p>
+      <ul><li>Government mandates accelerating in China, Korea, and India.</li><li>Battery cost decline crossing the parity threshold.</li><li>Fleet electrification led by ride-hailing operators.</li></ul>
+    </div>
+
+    <div data-role="user"><div class="who">You</div>Quantify the market size and CAGR for 2025–2030.</div>
+    <div data-role="assistant"><div class="who">Agent</div>
+      <div class="tool" data-tool="analysis">📊 analysis · aggregating figures</div>
+      <p>Consolidated estimate across sources:</p>
+      <table><thead><tr><th>Metric</th><th>2025</th><th>2030</th><th>CAGR</th></tr></thead>
+      <tbody><tr><td>Market size (US$B)</td><td>18.4</td><td>61.2</td><td>27.1%</td></tr>
+      <tr><td>Public chargers (M)</td><td>3.1</td><td>9.8</td><td>25.9%</td></tr></tbody></table>
+    </div>
+
+    <div data-role="user"><div class="who">You</div>Draft a one-paragraph executive summary.</div>
+    <div data-role="assistant"><div class="who">Agent</div>
+      <p>The APAC EV charging market is entering a steep growth phase, expanding from US$18.4B in 2025 to an estimated US$61.2B by 2030 (27% CAGR). Growth is anchored by regulatory mandates, battery cost parity, and rapid fleet electrification, with China and India contributing the majority of net-new public charging capacity.</p>
+    </div>
+
+    <div data-role="user"><div class="who">You</div>Generate a Python snippet to project the 2027 midpoint.</div>
+    <div data-role="assistant"><div class="who">Agent</div>
+      <div class="tool" data-tool="code">🧮 code · projection</div>
+      <pre>start, end, years = 18.4, 61.2, 5
+cagr = (end/start) ** (1/years) - 1
+mid_2027 = start * (1 + cagr) ** 2
+print(round(mid_2027, 1))  # 29.7</pre>
+    </div>
+
+    <div data-role="user"><div class="who">You</div>List three risks to this forecast.</div>
+    <div data-role="assistant"><div class="who">Agent</div>
+      <ul><li>Grid capacity lagging charger rollout in dense metros.</li><li>Subsidy rollbacks compressing near-term demand.</li><li>Standards fragmentation across connectors and payment.</li></ul>
+      <p>Recommend a sensitivity band of ±15% on the 2030 figure.</p>
+    </div>
+  </div>
+</main>
+<script src="../extension/pn.js"></script>
+</body>
+</html>
