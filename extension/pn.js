@@ -43,6 +43,7 @@
 
   // Extension mode stays dormant until the toolbar button is clicked; standalone <script> auto-runs.
   const IS_EXTENSION = !!(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id);
+  const PN_ICON = (IS_EXTENSION && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icon128.png") : null;
   let pnEnabled = !IS_EXTENSION;
   let booted = false;
   function setEnabled(on) {
@@ -60,6 +61,7 @@
     flashMs: 1200,
     defaultMode: "navigate",
     promptLabel: "Your Prompt",
+    replayMs: 10000,
   };
 
   const BUILTIN_TEMPLATES = [
@@ -628,6 +630,9 @@
       @keyframes pnFlash { 0% { box-shadow: 0 0 0 3px rgba(68,87,214,.9); } 100% { box-shadow: 0 0 0 3px rgba(68,87,214,0); } }
       .pn-current { position: relative !important; outline: 3px solid #4457d6 !important; outline-offset: 3px; border-radius: 8px; scroll-margin-top: 28px; }
       .pn-current::before { content: attr(data-pn-label); position: absolute; top: -11px; left: 10px; background: #4457d6; color: #fff; font: 700 11px/1.5 system-ui, -apple-system, sans-serif; letter-spacing: .02em; padding: 1px 8px; border-radius: 6px; z-index: 2147483000; pointer-events: none; white-space: nowrap; }
+      .pn-revealing { visibility: hidden !important; }
+      .pn-revealing .pn-w { opacity: 0; }
+      .pn-revealing .pn-on { visibility: visible !important; opacity: 1; transition: opacity .12s ease-out; }
     `;
   function injectPageStyles() {
     if (document.getElementById("pn-page-style")) return;
@@ -649,6 +654,7 @@
     try { root.appendChild(st); } catch (_) {}
   }
   function navigateTo(i) {
+    cancelReplay();
     S.currentIndex = Math.max(0, Math.min(S.steps.length - 1, i));
     const step = S.steps[S.currentIndex];
     if (step.type === "card") { showCard(step); renderPanel(); return; }
@@ -665,6 +671,104 @@
       }
     }
     renderPanel();
+  }
+  // ------------------------------------------------------------ Replay (per-prompt word reveal)
+  let _replayCtl = null;
+  let _replayHidden = [];
+  let _replayRestore = null;
+  function cancelReplay() {
+    if (_replayCtl) _replayCtl.cancelled = true;
+    _replayCtl = null;
+    if (_replayRestore) { try { _replayRestore(); } catch (_) {} _replayRestore = null; }
+    _replayHidden.forEach((e) => { try { e.classList.remove("pn-hidden"); } catch (_) {} });
+    _replayHidden = [];
+  }
+  // Live response elements between the selected prompt and the next prompt (works across profiles,
+  // incl. shadow-DOM/virtualized where captured responseEls are empty — we slice the live rows).
+  function replayResponseEls(sel) {
+    const t = S.turns[sel];
+    if (!t) return [];
+    const container = S.container || getContainer(S.profile) || document.body;
+    const rowSel = S.rowSelector || (S.profile && S.profile.rowSelector);
+    let rows;
+    try { rows = rowSel ? Array.from(container.querySelectorAll(rowSel)) : Array.from(container.children); } catch (_) { rows = []; }
+    const startsWith = (r, s) => s && (r.innerText || "").replace(/\s+/g, " ").trim().startsWith(s);
+    let pi = t.promptEl ? rows.indexOf(t.promptEl) : -1;
+    if (pi < 0) pi = rows.findIndex((r) => startsWith(r, (t.promptText || "").slice(0, 30)));
+    if (pi < 0) return [];
+    const nt = S.turns[sel + 1];
+    let ni = nt && nt.promptEl ? rows.indexOf(nt.promptEl) : -1;
+    if (ni < 0 && nt) ni = rows.findIndex((r, idx) => idx > pi && startsWith(r, (nt.promptText || "").slice(0, 30)));
+    const end = ni > pi ? ni : rows.length;
+    return rows.slice(pi + 1, end);
+  }
+  const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Wrap each word of an element's text nodes in a <span> so words can be revealed one-by-one via
+  // `.pn-on`. The response element is `visibility:hidden` during replay (so its backgrounds, borders,
+  // list markers, icons and images stay hidden); each revealed word span flips back to visible.
+  function wrapWords(el, out) {
+    const doc = el.ownerDocument || document;
+    const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    const textNodes = [];
+    while (walker.nextNode()) { const n = walker.currentNode; if (n.nodeValue && /\S/.test(n.nodeValue)) textNodes.push(n); }
+    for (const tn of textNodes) {
+      const parent = tn.parentNode; if (!parent) continue;
+      const frag = doc.createDocumentFragment();
+      for (const tok of tn.nodeValue.split(/(\s+)/)) {
+        if (tok === "") continue;
+        if (/\S/.test(tok)) { const s = doc.createElement("span"); s.className = "pn-w"; s.textContent = tok; frag.appendChild(s); out.push(s); }
+        else frag.appendChild(doc.createTextNode(tok));
+      }
+      parent.replaceChild(frag, tn);
+    }
+  }
+  // Hide the selected prompt's response, then reveal it word-by-word up to the next prompt, paced so
+  // the whole run lasts ~S.global.replayMs (default 10s). Structure is preserved (opacity per word).
+  async function replaySelected() {
+    const step = S.steps[S.currentIndex];
+    if (!step || step.type !== "prompt") { toast("Select a prompt first"); return; }
+    cancelReplay();
+    const sel = step.turnIndex;
+    const t = S.turns[sel];
+    const els = replayResponseEls(sel);
+    if (!els.length) { toast("No response content to replay"); return; }
+    if (t && t.promptEl) { markCurrent(t.promptEl); try { t.promptEl.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {} }
+    ensureStylesIn(els[0]);
+    // Hide every OTHER prompt + response so only the current exchange is on screen during replay.
+    const rContainer = S.container || getContainer(S.profile) || document.body;
+    const rRowSel = S.rowSelector || (S.profile && S.profile.rowSelector);
+    let rRows; try { rRows = rRowSel ? Array.from(rContainer.querySelectorAll(rRowSel)) : Array.from(rContainer.children); } catch (_) { rRows = []; }
+    const keep = new Set(els); if (t && t.promptEl) keep.add(t.promptEl);
+    const others = rRows.filter((r) => !keep.has(r));
+    others.forEach((r) => { ensureStylesIn(r); r.classList.add("pn-hidden"); });
+    _replayHidden = others;
+    const origHtml = new Map();
+    const spans = [];
+    for (const el of els) { origHtml.set(el, el.innerHTML); el.classList.remove("pn-hidden"); el.classList.add("pn-revealing"); wrapWords(el, spans); }
+    _replayRestore = () => { for (const [el, h] of origHtml) { try { el.innerHTML = h; el.classList.remove("pn-revealing"); } catch (_) {} } };
+    const total = spans.length;
+    if (!total) { if (_replayRestore) { _replayRestore(); _replayRestore = null; } _replayHidden.forEach((e) => { try { e.classList.remove("pn-hidden"); } catch (_) {} }); _replayHidden = []; toast("No response content to replay"); return; }
+    // Pace one word per `tick`; if there are too many words, reveal several per 60ms tick — either
+    // way the whole reveal lands on ~TARGET.
+    const TARGET = (S.global && S.global.replayMs) || 10000;
+    let tick = Math.round(TARGET / total), per = 1;
+    if (tick < 60) { per = Math.ceil(60 / tick); tick = 60; } else if (tick > 500) { tick = 500; }
+    const ctl = { cancelled: false };
+    _replayCtl = ctl;
+    await _sleep(300); // brief "thinking" beat before the first word
+    for (let i = 0; i < total; i += per) {
+      if (ctl.cancelled) break;
+      const to = Math.min(total, i + per);
+      for (let j = i; j < to; j++) spans[j].classList.add("pn-on");
+      try { spans[to - 1].scrollIntoView({ behavior: "auto", block: "nearest" }); } catch (_) {}
+      await _sleep(tick);
+    }
+    if (!ctl.cancelled) {
+      if (_replayRestore) { _replayRestore(); _replayRestore = null; }
+      _replayHidden.forEach((e) => { try { e.classList.remove("pn-hidden"); } catch (_) {} });
+      _replayHidden = [];
+    }
+    if (_replayCtl === ctl) _replayCtl = null;
   }
   // Scroll a virtualized grid back to a collected prompt (its DOM node was recycled), then flash it.
   async function scrollToTurn(t) {
@@ -758,9 +862,10 @@ Return the HTML now.`);
       #panel.min { top: auto; left: auto; right: 16px; bottom: 16px; width: 56px; height: 56px;
         min-width: 0; min-height: 0; max-width: none; border: none; border-radius: 50%; resize: none;
         overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
-      .pn-icon { width: 100%; height: 100%; border: none; background: #4457d6; color: #fff; font-size: 26px;
-        cursor: pointer; display: grid; place-items: center; padding: 0; }
-      .pn-icon:hover { background: #5566e8; }
+      .pn-icon { width: 100%; height: 100%; border: none; background: #fff; color: #fff; font-size: 26px;
+        cursor: pointer; display: grid; place-items: center; padding: 0; overflow: hidden; }
+      .pn-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .pn-icon:hover { filter: brightness(1.03); }
       header { padding: 12px 14px; border-bottom: 1px solid #2a3252; }
       .row { display: flex; align-items: center; gap: 8px; }
       .brand { font-weight: 700; font-size: 14px; }
@@ -779,6 +884,7 @@ Return the HTML now.`);
       .mini { font-size: 11px; padding: 2px 6px; border-radius: 5px; border: 1px solid #2a3252; background: #1a2140; color: #cfd6ee; cursor: pointer; }
       footer { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border-top: 1px solid #2a3252; }
       footer button { flex: 1 0 30%; padding: 7px 4px; font-size: 11px; border: 1px solid #2a3252; background: #151b34; color: #cfd6ee; border-radius: 6px; cursor: pointer; }
+      footer button:disabled { opacity: .4; cursor: default; }
       .pos { font-size: 12px; color: #97a0c4; }
       .hbtn { background: none; border: none; color: #9aa4c8; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
       .dbg { font: 11px/1.45 ui-monospace, SFMono-Regular, monospace; color: #9aa4c8; padding: 6px 8px; border-top: 1px solid #2a3252; background: #0c1024; white-space: pre-wrap; max-height: 140px; overflow: auto; }
@@ -840,7 +946,7 @@ Return the HTML now.`);
   function renderPanel() {
     if (S._min) {
       panel.classList.add("min");
-      panel.innerHTML = `<button class="pn-icon" data-a="min" title="Open AgentDemo (${S.steps.length} steps)">🎬</button>`;
+      panel.innerHTML = `<button class="pn-icon" data-a="min" title="Open AgentDemo (${S.steps.length} steps)">${PN_ICON ? `<img src="${PN_ICON}" alt="AgentDemo">` : "🎬"}</button>`;
       panel.querySelector('[data-a="min"]').onclick = () => action("min");
       return;
     }
@@ -850,7 +956,6 @@ Return the HTML now.`);
     panel.innerHTML = `
       <header>
         <div class="row">
-          <span class="brand">🎬 AgentDemo</span>
           <span class="badge ${S.profile && S.profile.id !== "unknown" ? "known" : "unknown"}" data-a="profile" title="Click to force UI profile" style="cursor:pointer">${S.profile ? (S.profile.id === "unknown" ? "no UI match" : "UI: " + S.profile.id) : "…"}${S.forced ? " 🔒" : ""}</span>
           <span class="pos" style="margin-left:auto">${S.steps.length ? (S.currentIndex + 1) + " / " + S.steps.length : "0"}</span>
           <button class="hbtn" data-a="min" title="Minimize / expand">${S._min ? "▢" : "⚊"}</button>
@@ -861,6 +966,7 @@ Return the HTML now.`);
       ${S.showDebug && S.debug ? debugHTML(S.debug) : ""}
       <footer>
         <button data-a="analyze">🔍 Analyze</button>
+        <button data-a="replay" ${(S.turns.length && S.steps[S.currentIndex] && S.steps[S.currentIndex].type === "prompt") ? "" : "disabled"} title="Replay response token-by-token">▶ Replay</button>
         <button data-a="settings" title="Settings">⚙ Settings</button>
         <button data-a="debug" title="Toggle debug info">🐞 Debug</button>
         <button data-a="reset" title="Clear all prompts">🧹 Reset</button>
@@ -899,6 +1005,7 @@ Return the HTML now.`);
       case "settings": openSettings(); break;
       case "min": toggleMin(); break;
       case "analyze": analyzeSession(); break;
+      case "replay": replaySelected(); break;
       case "profile": openProfileMenu(); break;
       case "debug": S.showDebug = !S.showDebug; if (S.showDebug) setDebug("debug"); renderPanel(); break;
       case "reset": resetPrompts(); break;
