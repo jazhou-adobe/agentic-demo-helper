@@ -385,6 +385,7 @@
     _min: true,
     debug: null,
     showDebug: false,
+    replaying: false,
     _scrollMeta: null,
     forced: null,
   };
@@ -734,12 +735,16 @@
     if (!els.length) { toast("No response content to replay"); return; }
     if (t && t.promptEl) { markCurrent(t.promptEl); try { t.promptEl.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {} }
     ensureStylesIn(els[0]);
-    // Hide every OTHER prompt + response so only the current exchange is on screen during replay.
+    // Hide only from the NEXT prompt onward (future); everything up to & including the current
+    // prompt/response stays visible so earlier exchanges accumulate on screen.
     const rContainer = S.container || getContainer(S.profile) || document.body;
     const rRowSel = S.rowSelector || (S.profile && S.profile.rowSelector);
     let rRows; try { rRows = rRowSel ? Array.from(rContainer.querySelectorAll(rRowSel)) : Array.from(rContainer.children); } catch (_) { rRows = []; }
-    const keep = new Set(els); if (t && t.promptEl) keep.add(t.promptEl);
-    const others = rRows.filter((r) => !keep.has(r));
+    const startsWith = (r, s) => s && (r.innerText || "").replace(/\s+/g, " ").trim().startsWith(s);
+    const nt = S.turns[sel + 1];
+    let ni = nt && nt.promptEl ? rRows.indexOf(nt.promptEl) : -1;
+    if (ni < 0 && nt) ni = rRows.findIndex((r) => startsWith(r, (nt.promptText || "").slice(0, 30)));
+    const others = ni >= 0 ? rRows.slice(ni) : [];
     others.forEach((r) => { ensureStylesIn(r); r.classList.add("pn-hidden"); });
     _replayHidden = others;
     const origHtml = new Map();
@@ -764,11 +769,39 @@
       await _sleep(tick);
     }
     if (!ctl.cancelled) {
+      // Unwrap the current response (fully shown), but KEEP the other prompts/responses hidden until
+      // the presenter clicks Next or Replay End.
       if (_replayRestore) { _replayRestore(); _replayRestore = null; }
-      _replayHidden.forEach((e) => { try { e.classList.remove("pn-hidden"); } catch (_) {} });
-      _replayHidden = [];
     }
     if (_replayCtl === ctl) _replayCtl = null;
+  }
+  function nextPromptIndex(from) {
+    for (let i = from + 1; i < S.steps.length; i++) if (S.steps[i].type === "prompt") return i;
+    return -1;
+  }
+  // Begin a guided replay at the selected prompt; button becomes "Next".
+  async function replayStart() {
+    const step = S.steps[S.currentIndex];
+    if (!step || step.type !== "prompt") { toast("Select a prompt first"); return; }
+    S.replaying = true;
+    renderPanel();
+    await replaySelected();
+  }
+  // Advance to the next prompt and replay its response (previous exchange re-hidden).
+  async function replayNext() {
+    const ni = nextPromptIndex(S.currentIndex);
+    if (ni < 0) { toast("End of replay"); replayEnd(); return; }
+    S.currentIndex = ni;
+    renderPanel();
+    await replaySelected();
+  }
+  // End replay: reveal everything and reset the session.
+  function replayEnd() {
+    cancelReplay();
+    showAll();
+    S.replaying = false;
+    renderPanel();
+    toast("Replay ended");
   }
   // Scroll a virtualized grid back to a collected prompt (its DOM node was recycled), then flash it.
   async function scrollToTurn(t) {
@@ -966,9 +999,10 @@ Return the HTML now.`);
       ${S.showDebug && S.debug ? debugHTML(S.debug) : ""}
       <footer>
         <button data-a="analyze">🔍 Analyze</button>
-        <button data-a="replay" ${(S.turns.length && S.steps[S.currentIndex] && S.steps[S.currentIndex].type === "prompt") ? "" : "disabled"} title="Replay response token-by-token">▶ Replay</button>
         <button data-a="settings" title="Settings">⚙ Settings</button>
         <button data-a="debug" title="Toggle debug info">🐞 Debug</button>
+        <button data-a="${S.replaying ? "next" : "replaystart"}" ${(S.replaying || (S.turns.length && S.steps[S.currentIndex] && S.steps[S.currentIndex].type === "prompt")) ? "" : "disabled"} title="Reveal the selected prompt's response">${S.replaying ? "⏭ Next" : "▶ Replay Start"}</button>
+        <button data-a="replayend" ${S.replaying ? "" : "disabled"} title="End replay and show everything">⏹ Replay End</button>
         <button data-a="reset" title="Clear all prompts">🧹 Reset</button>
       </footer>
     `;
@@ -1005,7 +1039,9 @@ Return the HTML now.`);
       case "settings": openSettings(); break;
       case "min": toggleMin(); break;
       case "analyze": analyzeSession(); break;
-      case "replay": replaySelected(); break;
+      case "replaystart": replayStart(); break;
+      case "next": replayNext(); break;
+      case "replayend": replayEnd(); break;
       case "profile": openProfileMenu(); break;
       case "debug": S.showDebug = !S.showDebug; if (S.showDebug) setDebug("debug"); renderPanel(); break;
       case "reset": resetPrompts(); break;
@@ -1030,11 +1066,14 @@ Return the HTML now.`);
     const g = S.global;
     const m = modal(`
       <h3>Settings</h3>
-      <label>Selected-prompt label<br><input id="s-label" style="width:260px" value="${escapeHtml(g.promptLabel || "Your Prompt")}"></label>
+      <label>Selected-prompt label<br><input id="s-label" style="width:260px" value="${escapeHtml(g.promptLabel || "Your Prompt")}"></label><br><br>
+      <label>Replay speed (seconds)<br><input id="s-speed" type="number" min="1" step="1" style="width:120px" value="${Math.round(((g.replayMs) || 10000) / 1000)}"></label>
       <div class="actions"><button data-x="cancel">Cancel</button><button class="primary" data-x="ok">Save</button></div>`);
     m.querySelector('[data-x="cancel"]').onclick = closeModal;
     m.querySelector('[data-x="ok"]').onclick = async () => {
       g.promptLabel = m.querySelector("#s-label").value.trim() || "Your Prompt";
+      const secs = parseFloat(m.querySelector("#s-speed").value);
+      g.replayMs = (isNaN(secs) || secs <= 0 ? 10 : secs) * 1000;
       try { await store.set("pn:global", g); } catch (_) {}
       if (_pnCurrentEl) _pnCurrentEl.setAttribute("data-pn-label", g.promptLabel);
       closeModal(); toast("Settings saved");
